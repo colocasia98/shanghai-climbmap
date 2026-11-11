@@ -700,6 +700,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     .picker { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:10px; margin:14px 0 10px; }
     select { width:100%; min-width:0; }
     .detail { padding:12px 0; border-top:1px solid var(--border); border-bottom:1px solid var(--border); display:grid; gap:8px; }
+    .detail[hidden] { display:none; }
     .detail-head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; }
     #name { font-weight:500; }
     details { margin-top:14px; }
@@ -739,7 +740,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <label for="venue-select">选择场馆</label>
     <select id="venue-select"></select>
   </div>
-  <section class="detail" aria-live="polite">
+  <section id="venue-detail" class="detail" aria-live="polite" hidden>
     <div class="detail-head"><span id="name"></span><a id="navigation" class="button" target="_blank" rel="noopener noreferrer">导航</a></div>
     <div id="address"></div>
     <div id="hours-line" class="hours-line small"><span id="hours"></span><a id="hours-source" target="_blank" rel="noopener noreferrer" hidden>时间来源</a></div>
@@ -782,7 +783,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     {key:'added',name:'补充场馆',items:venues.filter(v=>!v.known&&!inactive(v))},
     {key:'pending',name:'待核',items:venues.filter(inactive)}
   ];
-  $('venue-select').innerHTML=groups.map(g=>`<optgroup label="${g.name}">${g.items.map(v=>`<option value="${v.id}">${escape(v.name)} · ${escape(v.district)}</option>`).join('')}</optgroup>`).join('');
+  $('venue-select').innerHTML='<option value="" disabled selected>请选择</option>'+groups.map(g=>`<optgroup label="${g.name}">${g.items.map(v=>`<option value="${v.id}">${escape(v.name)} · ${escape(v.district)}</option>`).join('')}</optgroup>`).join('');
   groups.forEach(g=>{
     $(g.key+'-title').textContent=`${g.name} · ${g.items.length}家`;
     $(g.key+'-index').innerHTML=g.items.map(v=>`<button type="button" data-venue="${v.id}">${escape(v.name)}</button>`).join('');
@@ -806,7 +807,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
   const pane=map.createPane('venue-overlay');pane.style.zIndex='450';pane.style.pointerEvents='none';
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
   svg.setAttribute('class','venue-overlay');svg.setAttribute('aria-hidden','true');pane.appendChild(svg);
-  let selected=59,projected=[];
+  let selected=null,projected=[];
   const late=v=>!inactive(v)&&v.lateWeekdays===true;
   const markerStyle=v=>inactive(v)?{fill:'#89929a',shape:'triangle',stroke:'#fff',radius:5}:{fill:late(v)?'var(--late)':v.known?'#ffda28':'#2573b9',shape:v.known?'circle':'diamond',stroke:late(v)?'#fff':v.known?'#6a5500':'#fff',radius:5};
   function projection(){
@@ -820,9 +821,12 @@ svg.leaflet-image-layer.leaflet-interactive path {
     projected=mapped.map(v=>({v,p:project([v.lng,v.lat])}));
     const visible=projected.filter(x=>x.p[0]>-20&&x.p[0]<size.x+20&&x.p[1]>-20&&x.p[1]<size.y+20);
     const ordered=[...visible.filter(x=>x.v.id!==selected),...visible.filter(x=>x.v.id===selected)];
+    const occupied=[];
     let html='';
     for(const {v,p:[x,y]} of ordered){
       const m=markerStyle(v),r=m.radius+(v.id===selected?2:0);
+      const extent=r+2;
+      occupied.push({x:x-extent,y:y-extent,w:2*extent,h:2*extent,markerId:v.id});
       if(v.id===selected)html+=`<circle cx="${x}" cy="${y}" r="${r+7}" fill="${m.fill}" fill-opacity=".2"/>`;
       const a=`data-venue="${v.id}" data-marker-type="${m.shape}" fill="${m.fill}" stroke="${m.stroke}" stroke-width="${v.known?1.8:1.5}"`;
       if(m.shape==='triangle')html+=`<path ${a} d="M${x} ${y-r-2}L${x+r+1} ${y+r}L${x-r-1} ${y+r}Z"/>`;
@@ -837,9 +841,8 @@ svg.leaflet-image-layer.leaflet-interactive path {
     const labels=Array.from(svg.querySelectorAll('.venue-label'));
     // Measure the rendered font before placing labels, including mixed Latin and Chinese names.
     const widths=labels.map(label=>label.getComputedTextLength());
-    const occupied=[];
     labels.forEach((label,index)=>{
-      const [x,y]=labelPoints[index].p,w=widths[index];
+      const {v,p:[x,y]}=labelPoints[index],w=widths[index];
       const candidates=[
         [x+12,y-10,'start'],[x-12,y-10,'end'],
         [x+12,y+22,'start'],[x-12,y+22,'end']
@@ -847,7 +850,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
       for(const [tx,ty,anchor] of candidates){
         const rect={x:anchor==='end'?tx-w:tx,y:ty-14,w,h:18};
         if(rect.x<5||rect.x+w>size.x-5||ty<20||ty>size.y-8)continue;
-        if(occupied.some(b=>rect.x<b.x+b.w+5&&rect.x+rect.w+5>b.x&&rect.y<b.y+b.h+5&&rect.y+rect.h+5>b.y))continue;
+        if(occupied.some(b=>b.markerId!==v.id&&rect.x<b.x+b.w+5&&rect.x+rect.w+5>b.x&&rect.y<b.y+b.h+5&&rect.y+rect.h+5>b.y))continue;
         label.setAttribute('x',tx);
         label.setAttribute('y',ty);
         label.setAttribute('text-anchor',anchor);
@@ -868,6 +871,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     if(v.hoursSource)$('hours-source').href=v.hoursSource;
     $('meta').textContent=`${v.district} · ${pending(v)?'待核':v.known?'你的清单':'补充'} · ${v.quality}`;
     $('note').textContent=v.note;$('note').hidden=!v.note;$('navigation').href=v.navigation;
+    $('venue-detail').hidden=false;
     if(pan&&hasPoint(v))map.setView([v.lat,v.lng],Math.max(map.getZoom(),14),{animate:false});
     render();
   }
@@ -882,8 +886,8 @@ svg.leaflet-image-layer.leaflet-interactive path {
   $('central').addEventListener('click',()=>map.fitBounds([[31.085,121.25],[31.335,121.66]],{padding:[12,12],animate:false}));
   $('all').addEventListener('click',()=>map.fitBounds(active.filter(hasPoint).map(v=>[v.lat,v.lng]),{padding:[22,22],animate:false}));
   new ResizeObserver(()=>map.invalidateSize({animate:false})).observe($('map'));
-  choose(selected,false);
   map.fitBounds([[31.085,121.25],[31.335,121.66]],{padding:[12,12],animate:false});
+  render();
   // Read-only QA surface: provider, loaded image count and projected/Leaflet pixel differences.
   window.shanghaiClimbingMapState=()=>({provider:'GeoQ',coordinateSystem:data.displayCoordinateSystem,loadedTiles,failedTiles,selected,
     pendingVenues:venues.filter(pending).map(v=>v.id),
