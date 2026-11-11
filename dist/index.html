@@ -829,16 +829,34 @@ svg.leaflet-image-layer.leaflet-interactive path {
       else if(m.shape==='diamond')html+=`<path ${a} d="M${x} ${y-r-1}L${x+r+1} ${y}L${x} ${y+r+1}L${x-r-1} ${y}Z"/>`;
       else html+=`<circle ${a} cx="${x}" cy="${y}" r="${r}"/>`;
     }
-    const occupied=[];
-    for(const x of [...visible.filter(x=>x.v.id===selected),...(map.getZoom()>13?visible.filter(x=>x.v.id!==selected):[])]){
-      const text=x.v.name,w=Math.min(text.length*12,Math.max(140,size.x-40)),h=18;
-      for(const [tx,ty] of [[x.p[0]+12,x.p[1]-10],[x.p[0]-w-12,x.p[1]-10],[x.p[0]+12,x.p[1]+22]]){
-        const rect={x:tx,y:ty-14,w,h};
-        if(tx<5||tx+w>size.x-5||ty<20||ty>size.y-8||occupied.some(b=>rect.x<b.x+b.w+5&&rect.x+rect.w+5>b.x&&rect.y<b.y+b.h+5&&rect.y+rect.h+5>b.y))continue;
-        html+=`<text class="venue-label" x="${tx}" y="${ty}">${escape(text)}</text>`;occupied.push(rect);break;
-      }
+    const labelPoints=[...visible.filter(x=>x.v.id===selected),...(map.getZoom()>13?visible.filter(x=>x.v.id!==selected):[])];
+    for(const {v} of labelPoints){
+      html+=`<text class="venue-label" data-venue-label="${v.id}">${escape(v.name)}</text>`;
     }
-    svg.innerHTML=html;updateStatus();
+    svg.innerHTML=html;
+    const labels=Array.from(svg.querySelectorAll('.venue-label'));
+    // Measure the rendered font before placing labels, including mixed Latin and Chinese names.
+    const widths=labels.map(label=>label.getComputedTextLength());
+    const occupied=[];
+    labels.forEach((label,index)=>{
+      const [x,y]=labelPoints[index].p,w=widths[index];
+      const candidates=[
+        [x+12,y-10,'start'],[x-12,y-10,'end'],
+        [x+12,y+22,'start'],[x-12,y+22,'end']
+      ];
+      for(const [tx,ty,anchor] of candidates){
+        const rect={x:anchor==='end'?tx-w:tx,y:ty-14,w,h:18};
+        if(rect.x<5||rect.x+w>size.x-5||ty<20||ty>size.y-8)continue;
+        if(occupied.some(b=>rect.x<b.x+b.w+5&&rect.x+rect.w+5>b.x&&rect.y<b.y+b.h+5&&rect.y+rect.h+5>b.y))continue;
+        label.setAttribute('x',tx);
+        label.setAttribute('y',ty);
+        label.setAttribute('text-anchor',anchor);
+        occupied.push(rect);
+        return;
+      }
+      label.remove();
+    });
+    updateStatus();
   }
   function choose(id,pan=true){
     const v=byId.get(Number(id));if(!v)return;selected=v.id;
