@@ -807,57 +807,97 @@ svg.leaflet-image-layer.leaflet-interactive path {
   const pane=map.createPane('venue-overlay');pane.style.zIndex='450';pane.style.pointerEvents='none';
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
   svg.setAttribute('class','venue-overlay');svg.setAttribute('aria-hidden','true');pane.appendChild(svg);
-  let selected=null,projected=[];
+  let selected=null;
   const late=v=>!inactive(v)&&v.lateWeekdays===true;
   const markerStyle=v=>inactive(v)?{fill:'#89929a',shape:'triangle',stroke:'#fff',radius:5}:{fill:late(v)?'var(--late)':v.known?'#ffda28':'#2573b9',shape:v.known?'circle':'diamond',stroke:late(v)?'#fff':v.known?'#6a5500':'#fff',radius:5};
   function projection(){
     const size=map.getSize(),c=map.getCenter();
     return d3.geoMercator().center([c.lng,c.lat]).scale(256*Math.pow(2,map.getZoom())/(2*Math.PI)).translate([size.x/2,size.y/2]);
   }
+  function paintedBounds(element){
+    const {x,y,width,height}=element.getBBox();
+    const style=getComputedStyle(element);
+    const halfStroke=parseFloat(style.strokeWidth)/2;
+    const padding=element.localName==='path'&&style.strokeLinejoin==='miter'
+      ?halfStroke*Number(style.strokeMiterlimit):halfStroke;
+    return {left:x-padding,top:y-padding,right:x+width+padding,bottom:y+height+padding};
+  }
+  const clamp=(value,min,max)=>Math.min(max,Math.max(min,value));
+  const overlaps=(a,b)=>a.left<b.right+1&&a.right+1>b.left&&a.top<b.bottom+1&&a.bottom+1>b.top;
   function render(){
     const size=map.getSize(),project=projection();
     const topLeft=map.containerPointToLayerPoint([0,0]);
     L.DomUtil.setPosition(svg,topLeft);svg.setAttribute('width',size.x);svg.setAttribute('height',size.y);svg.setAttribute('viewBox',`0 0 ${size.x} ${size.y}`);
-    projected=mapped.map(v=>({v,p:project([v.lng,v.lat])}));
+    const projected=mapped.map(v=>({v,p:project([v.lng,v.lat])}));
     const visible=projected.filter(x=>x.p[0]>-20&&x.p[0]<size.x+20&&x.p[1]>-20&&x.p[1]<size.y+20);
-    const ordered=[...visible.filter(x=>x.v.id!==selected),...visible.filter(x=>x.v.id===selected)];
-    const occupied=[];
-    let html='';
+    // Keep markers available beyond the viewport as Leaflet moves the pane during a drag.
+    const ordered=[...projected.filter(x=>x.v.id!==selected),...projected.filter(x=>x.v.id===selected)];
+    let markerHtml='';
     for(const {v,p:[x,y]} of ordered){
       const m=markerStyle(v),r=m.radius+(v.id===selected?2:0);
-      const extent=r+2;
-      occupied.push({x:x-extent,y:y-extent,w:2*extent,h:2*extent,markerId:v.id});
-      if(v.id===selected)html+=`<circle cx="${x}" cy="${y}" r="${r+7}" fill="${m.fill}" fill-opacity=".2"/>`;
+      if(v.id===selected)markerHtml+=`<circle cx="${x}" cy="${y}" r="${r+7}" fill="${m.fill}" fill-opacity=".2"/>`;
       const a=`data-venue="${v.id}" data-marker-type="${m.shape}" fill="${m.fill}" stroke="${m.stroke}" stroke-width="${v.known?1.8:1.5}"`;
-      if(m.shape==='triangle')html+=`<path ${a} d="M${x} ${y-r-2}L${x+r+1} ${y+r}L${x-r-1} ${y+r}Z"/>`;
-      else if(m.shape==='diamond')html+=`<path ${a} d="M${x} ${y-r-1}L${x+r+1} ${y}L${x} ${y+r+1}L${x-r-1} ${y}Z"/>`;
-      else html+=`<circle ${a} cx="${x}" cy="${y}" r="${r}"/>`;
+      if(m.shape==='triangle')markerHtml+=`<path ${a} d="M${x} ${y-r-2}L${x+r+1} ${y+r}L${x-r-1} ${y+r}Z"/>`;
+      else if(m.shape==='diamond')markerHtml+=`<path ${a} d="M${x} ${y-r-1}L${x+r+1} ${y}L${x} ${y+r+1}L${x-r-1} ${y}Z"/>`;
+      else markerHtml+=`<circle ${a} cx="${x}" cy="${y}" r="${r}"/>`;
     }
     const labelPoints=[...visible.filter(x=>x.v.id===selected),...(map.getZoom()>13?visible.filter(x=>x.v.id!==selected):[])];
-    for(const {v} of labelPoints){
-      html+=`<text class="venue-label" data-venue-label="${v.id}">${escape(v.name)}</text>`;
-    }
-    svg.innerHTML=html;
+    const labelHtml=labelPoints.map(({v})=>`<text class="venue-label" data-venue-label="${v.id}">${escape(v.name)}</text>`).join('');
+    svg.innerHTML=`<g class="venue-labels">${labelHtml}</g><g class="venue-markers">${markerHtml}</g>`;
+    const occupied=Array.from(svg.querySelectorAll('[data-marker-type]'),paintedBounds);
     const labels=Array.from(svg.querySelectorAll('.venue-label'));
-    // Measure the rendered font before placing labels, including mixed Latin and Chinese names.
-    const widths=labels.map(label=>label.getComputedTextLength());
+    // Measure both anchors at the origin so each candidate can reuse the bounds.
+    const startBounds=labels.map(paintedBounds);
+    labels.forEach(label=>label.setAttribute('text-anchor','end'));
+    const endBounds=labels.map(paintedBounds);
     labels.forEach((label,index)=>{
-      const {v,p:[x,y]}=labelPoints[index],w=widths[index];
+      const {v,p:[x,y]}=labelPoints[index];
+      const isSelected=v.id===selected;
       const candidates=[
         [x+12,y-10,'start'],[x-12,y-10,'end'],
         [x+12,y+22,'start'],[x-12,y+22,'end']
       ];
-      for(const [tx,ty,anchor] of candidates){
-        const rect={x:anchor==='end'?tx-w:tx,y:ty-14,w,h:18};
-        if(rect.x<5||rect.x+w>size.x-5||ty<20||ty>size.y-8)continue;
-        if(occupied.some(b=>b.markerId!==v.id&&rect.x<b.x+b.w+5&&rect.x+rect.w+5>b.x&&rect.y<b.y+b.h+5&&rect.y+rect.h+5>b.y))continue;
-        label.setAttribute('x',tx);
-        label.setAttribute('y',ty);
-        label.setAttribute('text-anchor',anchor);
-        occupied.push(rect);
+      if(isSelected){
+        const bounds=startBounds[index],marker=occupied.at(-1);
+        const centerX=clamp(x-(bounds.left+bounds.right)/2,5-bounds.left,size.x-5-bounds.right);
+        const centerY=y-(bounds.top+bounds.bottom)/2;
+        candidates.push(
+          [centerX,marker.top-3-bounds.bottom,'start'],
+          [centerX,marker.bottom+3-bounds.top,'start'],
+          [marker.right+3-bounds.left,centerY,'start'],
+          [marker.left-3-bounds.right,centerY,'start']
+        );
+        // If the nearby positions are blocked, try the closest free row in this column.
+        const rows=occupied
+          .filter(b=>b.left<centerX+bounds.right+1&&b.right+1>centerX+bounds.left)
+          .flatMap(b=>[b.top-2-bounds.bottom,b.bottom+2-bounds.top])
+          .sort((a,b)=>Math.abs(a-centerY)-Math.abs(b-centerY));
+        candidates.push(...rows.map(row=>[centerX,row,'start']));
+      }
+      let placement,fewestOverlaps=Infinity;
+      for(let [tx,ty,anchor] of candidates){
+        const bounds=(anchor==='end'?endBounds:startBounds)[index];
+        if(isSelected){
+          tx=clamp(tx,5-bounds.left,size.x-5-bounds.right);
+          ty=clamp(ty,5-bounds.top,size.y-5-bounds.bottom);
+        }
+        const rect={left:tx+bounds.left,top:ty+bounds.top,right:tx+bounds.right,bottom:ty+bounds.bottom};
+        if(rect.left<5||rect.right>size.x-5||rect.top<5||rect.bottom>size.y-5)continue;
+        const collisions=occupied.filter(b=>overlaps(rect,b)).length;
+        if(collisions===0||(isSelected&&collisions<fewestOverlaps)){
+          placement={tx,ty,anchor,rect};
+          fewestOverlaps=collisions;
+        }
+        if(collisions===0)break;
+      }
+      if(!placement){
+        label.remove();
         return;
       }
-      label.remove();
+      label.setAttribute('x',placement.tx);
+      label.setAttribute('y',placement.ty);
+      label.setAttribute('text-anchor',placement.anchor);
+      occupied.push(placement.rect);
     });
     updateStatus();
   }
@@ -875,10 +915,15 @@ svg.leaflet-image-layer.leaflet-interactive path {
     if(pan&&hasPoint(v))map.setView([v.lat,v.lng],Math.max(map.getZoom(),14),{animate:false});
     render();
   }
-  map.on('move zoom resize',render);
+  map.on('moveend zoom resize',render);
   map.on('click',event=>{
+    const project=projection();
     let nearest=null,dist=24;
-    for(const x of projected){const d=Math.hypot(event.containerPoint.x-x.p[0],event.containerPoint.y-x.p[1]);if(d<dist){dist=d;nearest=x.v;}}
+    for(const v of mapped){
+      const [x,y]=project([v.lng,v.lat]);
+      const d=Math.hypot(event.containerPoint.x-x,event.containerPoint.y-y);
+      if(d<dist){dist=d;nearest=v;}
+    }
     if(nearest)choose(nearest.id,false);
   });
   $('venue-select').addEventListener('change',e=>choose(e.target.value));
