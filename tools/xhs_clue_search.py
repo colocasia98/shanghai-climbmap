@@ -27,7 +27,7 @@ def lookup_venue(name):
     if len(matches) != 1:
         raise ValueError("请使用地图上的完整场馆名，例如 AOB2·创智天地")
     label, _, branch = matches[0]["name"].partition("·")
-    brand = re.sub(r"\d+$", "", label)
+    brand = re.sub(r"\d+$", "", label) or label
     branch = re.split(r"[（(]", branch, maxsplit=1)[0]
     return brand, branch, label
 
@@ -72,7 +72,7 @@ def rank(feeds, brand, branch, label, official_ids):
         elif official and explicit:
             reason, priority = "已核对的官号发文，需核对分店", 4
         elif explicit and (named_brand or (
-            "上海" in text and re.search("攀岩|岩馆|爬|换线|拆线|定线", text)
+            "上海" in text and re.search("攀岩|岩馆|抱石|爬新线|上墙", text)
         )):
             reason, priority = "品牌或上海汇总，需核对分店", 3
         elif branch_match and shares_new_lines:
@@ -85,7 +85,7 @@ def rank(feeds, brand, branch, label, official_ids):
         candidate = {
             "title": title, "author": author.get("nickname") or author.get("nickName"),
             "url": "https://www.xiaohongshu.com/explore/" + note_id,
-            "reason": reason, "readable": bool(item.get("xsecToken")),
+            "reason": reason, "can_attempt_read": bool(item.get("xsecToken")),
         }
         qualified.append((priority, candidate, item))
     return sorted(qualified, key=lambda row: -row[0])
@@ -115,7 +115,7 @@ def main():
         matches = rank(feeds, brand, branch, label, set(args.official_id))
         report = {"venue": args.venue, "query": query, "scanned": len(feeds),
                   "candidates": [note for _, note, _ in matches[:5]]}
-        if args.read and matches and matches[0][1]["readable"]:
+        if args.read and matches and matches[0][1]["can_attempt_read"]:
             time.sleep(3)
             _, candidate, raw = matches[0]
             try:
