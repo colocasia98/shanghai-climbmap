@@ -890,7 +890,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
   }
   const resetHistoryDisplayDays=30;
   function resetDetails(v,now=Date.now()){
-    if(v.fixedRoutes)return {fixed:true,checked:v.checked};
+    if(v.fixedRoutes)return null;
     const day=shanghaiDay(now), plan=v.routeReset;
     const windows=resetWindows(plan);
     const today=windows.filter(window=>resetWindowState(window,now,day)==='today');
@@ -930,9 +930,9 @@ svg.leaflet-image-layer.leaflet-interactive path {
     }
     return `${day(start)}至 ${day(end)}`;
   }
-  function resetRows(windows,fallback,empty='暂无信息'){
+  function resetRows(windows,fallback){
     const row=text=>Object.assign(document.createElement('li'),{textContent:text});
-    if(!windows.length)return [row(empty)];
+    if(!windows.length)return [row('暂无信息')];
     if(windows.some(window=>!window.text)&&fallback?.length)return fallback.map(row);
     return windows.map(window=>{
       const item=row('');
@@ -951,13 +951,13 @@ svg.leaflet-image-layer.leaflet-interactive path {
     const reset=resetDetails(v);
     $('route-reset').hidden=!reset;
     if(!reset)return;
-    const {last,today=[],next=[],plan,checked,fixed}=reset;
+    const {last,today,next,plan,checked}=reset;
     const dates=last&&(last.start===last.end?last.start:`${last.start} 至 ${last.end}`);
     $('route-reset-today').hidden=!today.length;
     $('route-reset-current').textContent=today.length&&today.every(window=>window.phase==='prep')?'今日安排':'今日换线';
     $('route-reset-current-rows').replaceChildren(...resetRows(today,plan?.lines));
     $('route-reset-last').textContent=last?`${dates} · ${last.scope}`:'暂无信息';
-    $('route-reset-next').replaceChildren(...resetRows(next,plan?.lines,fixed?'固定线路，不换线':'暂无信息'));
+    $('route-reset-next').replaceChildren(...resetRows(next,plan?.lines));
     $('route-reset-plan-note').hidden=!plan?.note;
     $('route-reset-plan-note').textContent=plan?.note||'';
     $('route-reset-checked').textContent=`更新时间 ${checked}`;
