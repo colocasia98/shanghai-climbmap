@@ -98,6 +98,7 @@ def main():
     parser.add_argument("--query", help="覆盖关键词，用于已确认的官号名称或门店别名")
     parser.add_argument("--official-id", action="append", default=[], help="人工核验的官号公开 ID")
     parser.add_argument("--cached", type=Path, help="用本机搜索结果回放筛选")
+    parser.add_argument("--history", action="store_true", help="补查上次换线，放宽平台的一周筛选")
     parser.add_argument("--read", action="store_true", help="尝试读优先级最高的一篇")
     args = parser.parse_args()
     if args.cached and args.read:
@@ -109,8 +110,10 @@ def main():
             cache = json.loads(args.cached.read_text())
             feeds = [note for row in cache if compact(row["query"]) == compact(query) for note in row["feeds"]]
         else:
+            filters = ({"sort_by": "综合", "publish_time": "半年内"} if args.history
+                       else {"sort_by": "最新", "publish_time": "一周内"})
             feeds = api_call("/feeds/search", {
-                "keyword": query, "filters": {"sort_by": "最新", "publish_time": "一周内"},
+                "keyword": query, "filters": filters,
             }).get("feeds") or []
         matches = rank(feeds, brand, branch, label, set(args.official_id))
         report = {"venue": args.venue, "query": query, "scanned": len(feeds),
