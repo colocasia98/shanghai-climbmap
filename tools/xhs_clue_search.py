@@ -14,6 +14,8 @@ APP_DIR = Path.home() / "Library/Application Support/Shanghai Climbmap/xhs"
 API = "http://127.0.0.1:18060/api/v1"
 RESET_TEXT = re.compile("换线|拆线|定线|闭馆|线路更新")
 NEW_LINES = re.compile("新线|上新|新.{0,2}条")
+OFFICIAL_SCHEDULE = re.compile("日历|月历|排期|本周安排|本月安排|营业调整|营业安排|开放安排")
+RESET_ANNOUNCEMENT = re.compile("闭馆|拆线|(?:换线|定线).{0,3}(?:通知|公告|安排|日历)|(?:通知|公告).{0,3}(?:换线|定线)")
 
 
 def compact(text):
@@ -62,7 +64,7 @@ def rank(feeds, brand, branch, label, official_ids):
         named_branch = bool(branch and compact(branch) in text)
         named_label = numbered and compact(label) in text
         named_brand = bool(brand and compact(brand) in text)
-        explicit = bool(RESET_TEXT.search(title))
+        explicit = bool(RESET_TEXT.search(title) or (official and OFFICIAL_SCHEDULE.search(title)))
         shares_new_lines = bool(NEW_LINES.search(title))
         branch_match = named_label or (named_branch and (official or named_brand))
         if explicit and official and branch_match:
@@ -88,7 +90,7 @@ def rank(feeds, brand, branch, label, official_ids):
             "reason": reason, "can_attempt_read": bool(item.get("xsecToken")),
         }
         qualified.append((priority, candidate, item))
-    return sorted(qualified, key=lambda row: -row[0])
+    return sorted(qualified, key=lambda row: (-row[0], not RESET_ANNOUNCEMENT.search(row[1]["title"])))
 
 
 def main():
@@ -97,12 +99,15 @@ def main():
     parser.add_argument("--term", default="换线", help="本次搜索词，例如 拆线、定线、闭馆")
     parser.add_argument("--query", help="覆盖关键词，用于已确认的官号名称或门店别名")
     parser.add_argument("--official-id", action="append", default=[], help="人工核验的官号公开 ID")
+    parser.add_argument("--profile", action="store_true", help="用匹配的公开账号查馆方主页")
     parser.add_argument("--cached", type=Path, help="用本机搜索结果回放筛选")
     parser.add_argument("--history", action="store_true", help="补查上次换线，放宽平台的一周筛选")
     parser.add_argument("--read", action="store_true", help="尝试读优先级最高的一篇")
     args = parser.parse_args()
     if args.cached and args.read:
         parser.error("--cached 与 --read 不能同时使用")
+    if args.profile and (args.cached or len(args.official_id) != 1):
+        parser.error("--profile 需恰好一个 --official-id，不能与 --cached 一起使用")
     try:
         brand, branch, label = lookup_venue(args.venue)
         query = args.query or " ".join(filter(None, (brand, branch, args.term)))
@@ -110,14 +115,44 @@ def main():
             cache = json.loads(args.cached.read_text())
             feeds = [note for row in cache if compact(row["query"]) == compact(query) for note in row["feeds"]]
         else:
-            filters = ({"sort_by": "综合", "publish_time": "半年内"} if args.history
+            filters = ({"sort_by": "综合", "publish_time": "不限"} if args.profile
+                       else {"sort_by": "综合", "publish_time": "半年内"} if args.history
                        else {"sort_by": "最新", "publish_time": "一周内"})
             feeds = api_call("/feeds/search", {
                 "keyword": query, "filters": filters,
             }).get("feeds") or []
+        homepage = None
+        if args.profile:
+            official_id = args.official_id[0]
+            for item in feeds:
+                user = (item.get("noteCard") or {}).get("user") or {}
+                token = user.get("xsecToken") or item.get("xsecToken")
+                if user.get("userId") == official_id and token:
+                    break
+            else:
+                raise ValueError("未找到指定官号，换一个已知帖子的标题或官号关键词重试")
+            result = api_call("/user/profile", {
+                "user_id": official_id, "xsec_token": token, "tab": "note",
+            }, timeout=30)
+            profile = result.get("data") or result
+            if not isinstance(profile.get("feeds"), list):
+                raise RuntimeError("官号主页未返回帖子清单")
+            feeds = profile["feeds"]
+            homepage = "https://www.xiaohongshu.com/user/profile/" + official_id
+            for item in feeds:
+                if item.get("noteCard"):
+                    item["noteCard"]["user"] = user
         matches = rank(feeds, brand, branch, label, set(args.official_id))
         report = {"venue": args.venue, "query": query, "scanned": len(feeds),
                   "candidates": [note for _, note, _ in matches[:5]]}
+        if homepage:
+            report["profile"] = homepage
+            report["recent_posts"] = [
+                {"title": item["noteCard"].get("displayTitle"),
+                 "url": "https://www.xiaohongshu.com/explore/" + item["id"]}
+                for item in feeds[:12]
+                if item.get("noteCard") and re.fullmatch(r"[0-9a-f]{24}", item.get("id", ""))
+            ]
         if args.read and matches and matches[0][1]["can_attempt_read"]:
             time.sleep(3)
             _, candidate, raw = matches[0]
@@ -136,7 +171,8 @@ def main():
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     except (OSError, ValueError, RuntimeError) as exc:
-        print(f"小红书查询未完成（{type(exc).__name__}）", file=sys.stderr)
+        reason = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__
+        print(f"小红书查询未完成（{reason}）", file=sys.stderr)
         return 1
 
 
