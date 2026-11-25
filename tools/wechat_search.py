@@ -138,15 +138,87 @@ def read_article(url):
         "body": text, "poster_urls": article.images,
     }
 
+
+class YuanbaoResults(html.parser.HTMLParser):
+    """Read the official-account search cards returned by Tencent's public index."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.cards = []
+        self.links = None
+        self.link = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "article" and "result-card" in attrs.get("class", "").split():
+            self.links = []
+        elif tag == "a" and self.links is not None:
+            url = urllib.parse.urlsplit(attrs.get("href", ""))
+            if url.scheme in {"https", "http"} and url.netloc == "mp.weixin.qq.com":
+                self.link = (url._replace(scheme="https").geturl(), [])
+
+    def handle_data(self, data):
+        if self.link is not None:
+            self.link[1].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self.link is not None:
+            url, text = self.link
+            self.links.append((url, " ".join("".join(text).split())))
+            self.link = None
+        if tag == "article" and self.links is not None:
+            if len(self.links) >= 2:
+                self.cards.append(self.links)
+            self.links = None
+            self.link = None
+
+
+def search_yuanbao(query, account=None, biz=None):
+    params = urllib.parse.urlencode({"tab": "weixin_article", "query": query})
+    request = urllib.request.Request("https://so.qq.com/isearch?" + params, headers={
+        "Accept": "text/html",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
+    })
+    with urllib.request.urlopen(request, timeout=20) as response:
+        page = response.read().decode("utf-8", errors="replace")
+
+    results = YuanbaoResults()
+    results.feed(page)
+    if not results.cards:
+        raise RuntimeError("元宝未返回可识别的公众号结果，无法确认该账号的发文情况")
+
+    def account_key(name):
+        return "".join(name.split()).casefold()
+
+    items = {}
+    for links in results.cards:
+        url, meta = links[0]
+        _, title = links[1]
+        author, _, age = meta.partition("mp.weixin.qq.com")
+        author = re.sub(r"https?://$", "", author).strip()
+        query_params = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        if account and account_key(author) != account_key(account):
+            continue
+        if biz and query_params.get("__biz") != [biz]:
+            continue
+        if title:
+            items[url] = {"title": title, "account": author, "relative_date": age.strip(),
+                          "url": url, "summary": links[2][1] if len(links) > 2 else ""}
+    return {"source": "腾讯元宝公众号索引", "query": query, "account_filter": account,
+            "matched": len(items), "search_results": len(results.cards), "items": list(items.values())}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("query", nargs="?", help="搜索关键词，例如：Benchmark 攀岩 换线")
     parser.add_argument("--account", help="只保留完全匹配的公众号名称")
     parser.add_argument("--article", metavar="URL", help="读取已知链接的公众号原文")
+    parser.add_argument("--source", choices=("sogou", "yuanbao"), default="sogou", help="选择公开索引")
+    parser.add_argument("--biz", help="用已验证的微信公众号标识过滤元宝结果")
     args = parser.parse_args()
     if args.article:
-        if args.query or args.account:
-            parser.error("--article 不与搜索关键词或 --account 一起使用")
+        if args.query or args.account or args.biz or args.source != "sogou":
+            parser.error("--article 不与搜索参数一起使用")
         try:
             print(json.dumps(read_article(args.article), ensure_ascii=False, indent=2))
         except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError) as error:
@@ -155,6 +227,15 @@ def main():
         return 0
     if not args.query:
         parser.error("请输入搜索关键词或使用 --article URL")
+    if args.source == "yuanbao":
+        try:
+            print(json.dumps(search_yuanbao(args.query, args.account, args.biz), ensure_ascii=False, indent=2))
+        except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError) as error:
+            print(f"查询失败：{error}", file=sys.stderr)
+            return 1
+        return 0
+    if args.biz:
+        parser.error("--biz 需与 --source yuanbao 一起使用")
     params = urllib.parse.urlencode({"type": 2, "query": args.query})
     request = urllib.request.Request("https://weixin.sogou.com/weixin?" + params, headers={"User-Agent": "Mozilla/5.0"})
     try:
